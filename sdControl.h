@@ -10,10 +10,12 @@ public:
   static void takeBusControl();
   static void relinquishBusControl();
   static bool canWeTakeBus();
+  static unsigned long readAndResetEdges();
  
 private:
   static volatile long _spiBlockoutTime;
   static bool _weTookBus;
+  static volatile unsigned long _csSenseEdges;
 };
 
 extern SDControl sdcontrol;

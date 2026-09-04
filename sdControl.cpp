@@ -4,12 +4,14 @@
 
 volatile long SDControl::_spiBlockoutTime = 0;
 bool SDControl::_weTookBus = false;
+volatile unsigned long SDControl::_csSenseEdges = 0;
 
 void SDControl::setup() {
   // ----- GPIO -------
 	// Detect when other master uses SPI bus
 	pinMode(CS_SENSE, INPUT);
 	attachInterrupt(CS_SENSE, []() {
+		_csSenseEdges++;
 		if(!_weTookBus)
 			_spiBlockoutTime = millis() + SPI_BLOCKOUT_PERIOD;
 	}, FALLING);
@@ -45,4 +47,13 @@ bool SDControl::canWeTakeBus() {
     return false;
   }
   return true;
+}
+
+// Read the CS_SENSE edge count accumulated since the last call, then reset it.
+unsigned long SDControl::readAndResetEdges() {
+	noInterrupts();
+	unsigned long v = _csSenseEdges;
+	_csSenseEdges = 0;
+	interrupts();
+	return v;
 }

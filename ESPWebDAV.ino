@@ -7,6 +7,62 @@
 #include "network.h"
 #include "gcode.h"
 #include "sdControl.h"
+#include <SdFat.h>
+#include "pins.h"
+
+// ==== TEMPORARY SD-ACTIVITY MONITOR (remove after profiling) ============
+// Profiles the CPAP's SD-bus access via the CS_SENSE interrupt and appends an
+// edge count to /SDMON.LOG once per 60 s. WiFi is NOT started in this mode, so
+// nothing contends for the card beyond this brief once-a-minute log write.
+// Comment out the define below to restore normal WebDAV operation.
+#define SD_ACTIVITY_MONITOR
+// =======================================================================
+
+#ifdef SD_ACTIVITY_MONITOR
+static SdFat monSd;
+
+void runSdActivityMonitor() {
+	SERIAL_ECHOLN("=== SD ACTIVITY MONITOR (no WiFi) ===");
+	SERIAL_ECHOLN("logging CS_SENSE edge counts to /SDMON.LOG every 60s");
+
+	sdcontrol.takeBusControl();
+	bool mounted = monSd.begin(SD_CS, SPI_FULL_SPEED);
+	sdcontrol.relinquishBusControl();
+	if(!mounted)
+		SERIAL_ECHOLN("WARN: initial SD mount failed; will retry each write");
+
+	unsigned long window = 0;
+	unsigned long bootMs = millis();
+	for(;;) {
+		for(int s = 0; s < 60; s++)
+			delay(1000);            // ESP idle for 60s; CPAP free to use the bus
+
+		unsigned long edges = SDControl::readAndResetEdges();
+		unsigned long tsec = (millis() - bootMs) / 1000UL;
+		window++;
+
+		char line[96];
+		snprintf(line, sizeof(line), "w=%lu t=%lus edges=%lu\r\n",
+		         window, tsec, edges);
+
+		// Brief bus-take just to append one line, then release.
+		sdcontrol.takeBusControl();
+		SdFile f;
+		if(!f.open("SDMON.LOG", O_CREAT | O_WRITE | O_APPEND)) {
+			monSd.begin(SD_CS, SPI_FULL_SPEED);   // remount + retry once
+			f.open("SDMON.LOG", O_CREAT | O_WRITE | O_APPEND);
+		}
+		if(f.isOpen()) {
+			f.write((const uint8_t*)line, strlen(line));
+			f.sync();
+			f.close();
+		}
+		sdcontrol.relinquishBusControl();
+
+		SERIAL_ECHO(line);          // mirror to the open serial monitor
+	}
+}
+#endif
 
 // LED is connected to GPIO2 on this board
 #define INIT_LED			{pinMode(2, OUTPUT);}
@@ -20,6 +76,11 @@ void setup() {
 	blink();
 	
 	sdcontrol.setup();
+
+#ifdef SD_ACTIVITY_MONITOR
+	runSdActivityMonitor();     // diagnostic build: profile SD bus, no WiFi
+	return;
+#endif
 
 	// ----- WIFI -------
   if(config.load() == 1) { // Connected before
