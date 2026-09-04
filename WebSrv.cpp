@@ -192,6 +192,26 @@ bool ESPWebDAV::parseRequest() {
 			destinationHeader = headerValue;
 	}
 	
+	// Consume the request body for methods whose handlers do not read
+	// it themselves (everything except PUT and LOCK). An unread body
+	// strands bytes in the socket: close() then aborts with RST instead
+	// of FIN -- truncating the response the client is still reading --
+	// and the stranded data corrupts request handling badly enough that
+	// SdFat open() intermittently fails, surfacing as a spurious 404.
+	// Every standards WebDAV client (rclone, gvfs, macOS, cadaver) sends
+	// a PROPFIND body, so draining is required beyond the Win redirector.
+	if(contentLengthHeader.length() && !method.equals("PUT") && !method.equals("LOCK")) {
+		size_t toDrain = contentLengthHeader.toInt();
+		uint8_t drainBuf[128];
+		while(toDrain > 0) {
+			size_t chunk = (toDrain < sizeof(drainBuf)) ? toDrain : sizeof(drainBuf);
+			size_t got = readBytesWithTimeout(drainBuf, chunk);
+			if(got == 0)
+				break;
+			toDrain -= got;
+		}
+	}
+
 	return true;
 }
 
