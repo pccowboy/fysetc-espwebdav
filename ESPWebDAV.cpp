@@ -17,6 +17,7 @@ const char *wdays[]  = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 bool ESPWebDAV::init(int chipSelectPin, SPISettings spiSettings, int serverPort) {
 // ------------------------
 	// start the wifi server
+	DBG_PRINT("FW_BUILD: "); DBG_PRINTLN(FW_BUILD);
 	server = new WiFiServer(serverPort);
 	server->begin();
 	

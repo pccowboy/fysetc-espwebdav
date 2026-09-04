@@ -261,6 +261,7 @@ void ESPWebDAV::_prepareHeader(String& response, String code, const char* conten
 		sendHeader("Accept-Ranges","none");
 		sendHeader("Transfer-Encoding","chunked");
 	}
+	sendHeader("X-Firmware", FW_BUILD);
 	sendHeader("Connection", "close");
 
 	response += _responseHeaders;
