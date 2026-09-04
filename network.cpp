@@ -115,7 +115,15 @@ bool Network::ready() {
 void Network::handle() {
   if(network.ready()) {
 	  sdcontrol.takeBusControl();
-	  dav.handleClient();
+	  // Remount the FAT volume before serving. This bridge shares one SD
+	  // card with the CPAP (the other SPI master); the CPAP's writes
+	  // invalidate the volume state cached at boot, making subdirectory
+	  // open() fail as a spurious 404. Re-running sd.begin() with the bus
+	  // held gives the ESP a current view of the filesystem each request.
+	  if(dav.initSD(SD_CS, SPI_FULL_SPEED))
+	    dav.handleClient();
+	  else
+	    dav.rejectClient("Failed to initialize SD Card");
 	  sdcontrol.relinquishBusControl();
 	}
 }
