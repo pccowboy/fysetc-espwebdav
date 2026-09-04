@@ -256,12 +256,12 @@ void ESPWebDAV::sendContent(const String& content) {
 	size_t size = content.length();
 	
 	if(_chunked) {
-		char * chunkSize = (char *) malloc(11);
-		if(chunkSize) {
-			sprintf(chunkSize, "%x%s", size, footer);
-			client.write(chunkSize, strlen(chunkSize));
-			free(chunkSize);
-		}
+		// A stack buffer cannot fail. The previous malloc(11) wrote the chunk-size
+		// line only on success, while the body and trailing CRLF below were written
+		// unconditionally, so a failed allocation desynchronized the chunked stream.
+		char chunkSize[12];
+		sprintf(chunkSize, "%x%s", (unsigned)size, footer);
+		client.write(chunkSize, strlen(chunkSize));
 	}
 	
 	client.write(content.c_str(), size);
@@ -283,12 +283,12 @@ void ESPWebDAV::sendContent_P(PGM_P content) {
 	size_t size = strlen_P(content);
 	
 	if(_chunked) {
-		char * chunkSize = (char *) malloc(11);
-		if(chunkSize) {
-			sprintf(chunkSize, "%x%s", size, footer);
-			client.write(chunkSize, strlen(chunkSize));
-			free(chunkSize);
-		}
+		// A stack buffer cannot fail. The previous malloc(11) wrote the chunk-size
+		// line only on success, while the body and trailing CRLF below were written
+		// unconditionally, so a failed allocation desynchronized the chunked stream.
+		char chunkSize[12];
+		sprintf(chunkSize, "%x%s", (unsigned)size, footer);
+		client.write(chunkSize, strlen(chunkSize));
 	}
 	
 	client.write_P(content, size);
