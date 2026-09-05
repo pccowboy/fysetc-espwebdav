@@ -25,7 +25,7 @@
 // and emitted as an X-Firmware header on every response (_prepareHeader),
 // so the running binary is verifiable over HTTP with no serial or reflash:
 //   curl -sI -X OPTIONS http://<ip>/ | grep -i x-firmware
-#define FW_BUILD "fysetc-espwebdav fix v4 chunk+drain+remount+bootdelay+chunklease 2026-09-04"
+#define FW_BUILD "fysetc-espwebdav fix v5 chunk+drain+remount+bootdelay+chunklease+perchunkmount 2026-09-04"
 
 enum ResourceType { RESOURCE_NONE, RESOURCE_FILE, RESOURCE_DIR };
 enum DepthType { DEPTH_NONE, DEPTH_CHILD, DEPTH_ALL };
@@ -78,6 +78,8 @@ protected:
 	// variables pertaining to current most HTTP request being serviced
 	WiFiServer *server;
 	SdFat sd;
+	int _sdCsPin;
+	SPISettings _sdSpi;
 
 	WiFiClient 	client;
 	String 		method;

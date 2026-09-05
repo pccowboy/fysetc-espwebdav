@@ -23,12 +23,16 @@ bool ESPWebDAV::init(int chipSelectPin, SPISettings spiSettings, int serverPort)
 	server->begin();
 	
 	// initialize the SD card
+	_sdCsPin = chipSelectPin;
+	_sdSpi = spiSettings;
 	return sd.begin(chipSelectPin, spiSettings);
 }
 
 // ------------------------
 bool ESPWebDAV::initSD(int chipSelectPin, SPISettings spiSettings) {
 	// initialize the SD card
+	_sdCsPin = chipSelectPin;
+	_sdSpi = spiSettings;
 	return sd.begin(chipSelectPin, spiSettings);
 }
 
@@ -383,7 +387,10 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 		// SdFile is not carried across a bus release, so each chunk re-opens and
 		// seeks under its own short lease; the write then runs bus-free, letting
 		// the CPAP (the other master, polling ~every 10s) reclaim the bus between
-		// chunks instead of colliding mid-transfer.
+		// chunks instead of colliding mid-transfer. The CPAP also mutates the shared
+		// FAT between our chunks, so each chunk re-mounts (sd.begin) for a fresh
+		// volume view before reopening; a stale cached FAT is what made the second
+		// chunk fail in the ResMed while isolation was clean.
 		size_t pos = 0;
 		bool ioError = false;
 		while(pos < fileSize)	{
@@ -391,7 +398,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 			{
 				BusGuard _bg;
 				SdFile rFile;
-				if(rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos))
+				if(sd.begin(_sdCsPin, _sdSpi) && rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos))
 					numRead = rFile.read(buf, sizeof(buf));
 				rFile.close();
 			}
