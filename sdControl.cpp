@@ -3,6 +3,7 @@
 #include "pins.h"
 
 volatile long SDControl::_spiBlockoutTime = 0;
+volatile bool SDControl::_otherMasterWants = false;
 bool SDControl::_weTookBus = false;
 
 void SDControl::setup() {
@@ -12,6 +13,8 @@ void SDControl::setup() {
 	attachInterrupt(CS_SENSE, []() {
 		if(!_weTookBus)
 			_spiBlockoutTime = millis() + SPI_BLOCKOUT_PERIOD;
+		else
+			_otherMasterWants = true;	// CPAP asserted CS while we held the bus
 	}, FALLING);
 
 	// wait for other master to assert SPI bus first

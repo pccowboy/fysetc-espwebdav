@@ -381,42 +381,68 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 
 	send("200 OK", contentType.c_str(), "");
 
-	if(isGet)	{
-		// Decouple SD reads from the slow WiFi writes: hold the shared SPI bus
-		// only for each brief chunk read, never during network I/O. An open
-		// SdFile is not carried across a bus release, so each chunk re-opens and
-		// seeks under its own short lease; the write then runs bus-free, letting
-		// the CPAP (the other master, polling ~every 10s) reclaim the bus between
-		// chunks instead of colliding mid-transfer. The CPAP also mutates the shared
-		// FAT between our chunks, so each chunk re-mounts (sd.begin) for a fresh
-		// volume view before reopening; a stale cached FAT is what made the second
-		// chunk fail in the ResMed while isolation was clean.
+	if(isGet) {
+		// Collision-detect-and-retry bus sharing (this module has no hardware mux:
+		// the ESP and the CPAP hang off the same SPI lines). Hold the bus for the
+		// whole transfer and let SdFat deselect the card (CS high) between reads; we
+		// never tristate while the CPAP is quiet, so the card stays in SPI mode and
+		// reacquire cannot corrupt it -- that was the v5 (tristate-every-chunk) fail.
+		// The CS_SENSE ISR latches otherMasterWants() the instant the CPAP asserts its
+		// own CS. On a latched collision (during a read, or during the slow WiFi write)
+		// we tristate to hand the CPAP the bus, wait for it to clear (SPI_BLOCKOUT),
+		// remount for a fresh FAT view, reopen+seek, and RETRY the SAME offset. Idle
+		// stretches run bus-held and fly; a real poke costs one chunk retry, not the
+		// whole file -- that was the v3 (blind hold, no detect/recover) failure.
 		size_t pos = 0;
 		bool ioError = false;
-		while(pos < fileSize)	{
-			int numRead = 0;
-			{
-				BusGuard _bg;
-				SdFile rFile;
-				if(sd.begin(_sdCsPin, _sdSpi) && rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos))
-					numRead = rFile.read(buf, sizeof(buf));
+		int  retries = 0;
+		const int MAX_RETRIES = 20;
+		SdFile rFile;
+
+		// (re)take the bus, remount, reopen+seek to pos, clear the collision latch.
+		auto reacquire = [&]() -> bool {
+			sdcontrol.waitAndTakeBus();
+			if(sd.begin(_sdCsPin, _sdSpi) && rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos)) {
+				sdcontrol.clearOtherMasterWants();
+				return true;
+			}
+			rFile.close();
+			sdcontrol.relinquishBusControl();
+			return false;
+		};
+
+		bool haveFile = reacquire();
+
+		while(haveFile && pos < fileSize) {
+			int numRead = rFile.read(buf, sizeof(buf));
+
+			// Bad read, or the CPAP asserted CS during it: discard this chunk, yield the
+			// bus, remount, and retry the same offset (do not advance pos).
+			if(numRead <= 0 || sdcontrol.otherMasterWants()) {
 				rFile.close();
+				sdcontrol.relinquishBusControl();
+				if(++retries > MAX_RETRIES) { ioError = true; break; }
+				reacquire();
+				continue;
 			}
-			if(numRead <= 0)	{
-				ioError = true;
-				break;
-			}
-			if(client.write(buf, numRead) != (size_t)numRead)	{
-				ioError = true;
-				break;
-			}
+
+			retries = 0;
+			if(client.write(buf, numRead) != (size_t)numRead) { ioError = true; break; }
 			pos += numRead;
 			yield();
+
+			// A poke during the slow WiFi write: yield + remount before the next read.
+			if(sdcontrol.otherMasterWants()) {
+				rFile.close();
+				sdcontrol.relinquishBusControl();
+				if(++retries > MAX_RETRIES) { ioError = true; break; }
+				reacquire();
+			}
 		}
-		// Wedge fix: a short/aborted read means we've sent fewer bytes than the
-		// promised Content-Length; tear the socket down now so the next request
-		// isn't left waiting on a half-open connection.
-		if(ioError)	{
+
+		rFile.close();
+		sdcontrol.relinquishBusControl();
+		if(!haveFile || ioError || pos < fileSize) {
 			client.flush();
 			client.stop();
 		}

@@ -23,9 +23,15 @@ public:
   static void relinquishBusControl();
   static bool canWeTakeBus();
   static void waitAndTakeBus();
- 
+  // Latched by the CS_SENSE ISR when the CPAP asserts its own CS while WE hold
+  // the bus -- i.e. a real collision (not the idle-poll blockout path). The GET
+  // loop polls this to yield the bus, remount, and retry the colliding chunk.
+  static bool otherMasterWants()      { return _otherMasterWants; }
+  static void clearOtherMasterWants() { _otherMasterWants = false; }
+
 private:
   static volatile long _spiBlockoutTime;
+  static volatile bool _otherMasterWants;
   static bool _weTookBus;
 };
 
