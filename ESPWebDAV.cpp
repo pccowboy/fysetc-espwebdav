@@ -365,6 +365,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 		BusGuard _bg;
 		rFile.open(uri.c_str(), O_READ);
 		fileSize = rFile.fileSize();
+		rFile.close();
 	}
 
 	sendHeader("Allow", "PROPFIND,OPTIONS,DELETE,COPY,MOVE,HEAD,POST,PUT,GET");
@@ -376,24 +377,23 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 	send("200 OK", contentType.c_str(), "");
 
 	if(isGet)	{
-		// Stream in bus-bounded chunks: hold the SPI bus only for each ms-long
-		// SD read, release it for the (slow) network write so the CPAP -- the
-		// other SPI master, polling ~every 10s -- always has the bus during
-		// transmission. Nothing in this path writes the card.
-		while(rFile.available())	{
+		// Read the whole file inside ONE continuous bus lease. An open SdFile's
+		// SPI read state does not survive relinquishBusControl() (it tristates
+		// SCLK/MOSI/CS): releasing the bus between reads desyncs the card so the
+		// next read returns 0, truncating every GET to a single buffer. Out of
+		// session the CPAP only polls ~every 10s, so holding the bus for one
+		// file (well under the ~9s window) is safe and matches the access model.
+		BusGuard _bg;
+		if(rFile.open(uri.c_str(), O_READ))	{
 			int numRead;
-			{
-				BusGuard _bg;
-				numRead = rFile.read(buf, sizeof(buf));
+			while((numRead = rFile.read(buf, sizeof(buf))) > 0)	{
+				client.write(buf, numRead);
+				yield();
 			}
-			if(numRead <= 0)
-				break;
-			client.write(buf, numRead);
-			yield();
+			rFile.close();
 		}
 	}
 
-	{ BusGuard _bg; rFile.close(); }
 	DBG_PRINT("File "); DBG_PRINT(fileSize); DBG_PRINT(" bytes sent in: "); DBG_PRINT((millis() - tStart)/1000); DBG_PRINTLN(" sec");
 }
 
