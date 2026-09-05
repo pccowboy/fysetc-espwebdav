@@ -7,6 +7,7 @@
 #include <Hash.h>
 #include <time.h>
 #include "ESPWebDAV.h"
+#include "sdControl.h"
 
 // define cal constants
 const char *months[]  = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
@@ -99,9 +100,11 @@ void ESPWebDAV::handleRequest(String blank)	{
 
 	// does uri refer to a file or directory or a null?
 	FatFile tFile;
+	{ BusGuard _bg;
 	if(tFile.open(sd.vwd(), uri.c_str(), O_READ))	{
 		resource = tFile.isDir() ? RESOURCE_DIR : RESOURCE_FILE;
 		tFile.close();
+	}
 	}
 
 	DBG_PRINT("\r\nm: "); DBG_PRINT(method);
@@ -252,20 +255,24 @@ void ESPWebDAV::handleProp(ResourceType resource)	{
 
 	// open this resource
 	SdFile baseFile;
-	baseFile.open(uri.c_str(), O_READ);
+	{ BusGuard _bg; baseFile.open(uri.c_str(), O_READ); }
 	sendPropResponse(false, &baseFile);
 
 	if((resource == RESOURCE_DIR) && (depth == DEPTH_CHILD))	{
 		// append children information to message
 		SdFile childFile;
-		while(childFile.openNext(&baseFile, O_READ)) {
+		while(true) {
+			bool gotChild;
+			{ BusGuard _bg; gotChild = childFile.openNext(&baseFile, O_READ); }
+			if(!gotChild)
+				break;
 			yield();
 			sendPropResponse(true, &childFile);
-			childFile.close();
+			{ BusGuard _bg; childFile.close(); }
 		}
 	}
 
-	baseFile.close();
+	{ BusGuard _bg; baseFile.close(); }
 	sendContent(F("</D:multistatus>"));
 }
 
@@ -275,7 +282,16 @@ void ESPWebDAV::handleProp(ResourceType resource)	{
 void ESPWebDAV::sendPropResponse(boolean recursing, FatFile *curFile)	{
 // ------------------------
 	char buf[255];
-	curFile->getName(buf, sizeof(buf));
+	dir_t dir;
+	bool curIsDir;
+	uint32_t curSize;
+	{
+		BusGuard _bg;
+		curFile->getName(buf, sizeof(buf));
+		curFile->dirEntry(&dir);
+		curIsDir = curFile->isDir();
+		curSize = curFile->fileSize();
+	}
 
 // String fullResPath = "http://" + hostHeader + uri;
 	String fullResPath = uri;
@@ -286,9 +302,6 @@ void ESPWebDAV::sendPropResponse(boolean recursing, FatFile *curFile)	{
 		else
 			fullResPath += "/" + String(buf);
 
-	// get file modified time
-	dir_t dir;
-	curFile->dirEntry(&dir);
 
 	// convert to required format
 	tm tmStr;
@@ -318,12 +331,12 @@ void ESPWebDAV::sendPropResponse(boolean recursing, FatFile *curFile)	{
 	sendContent("\"" + sha1(fullResPath + fileTimeStamp) + "\"");
 	sendContent(F("</D:getetag>"));
 
-	if(curFile->isDir())
+	if(curIsDir)
 		sendContent(F("<D:resourcetype><D:collection/></D:resourcetype>"));
 	else	{
 		sendContent(F("<D:resourcetype/><D:getcontentlength>"));
 		// append the file size
-		sendContent(String(curFile->fileSize()));
+		sendContent(String(curSize));
 		sendContent(F("</D:getcontentlength><D:getcontenttype>"));
 		// append correct file mime type
 		sendContent(getMimeType(fullResPath));
@@ -347,10 +360,14 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 	SdFile rFile;
 	long tStart = millis();
 	uint8_t buf[1460];
-	rFile.open(uri.c_str(), O_READ);
+	size_t fileSize;
+	{
+		BusGuard _bg;
+		rFile.open(uri.c_str(), O_READ);
+		fileSize = rFile.fileSize();
+	}
 
 	sendHeader("Allow", "PROPFIND,OPTIONS,DELETE,COPY,MOVE,HEAD,POST,PUT,GET");
-	size_t fileSize = rFile.fileSize();
 	setContentLength(fileSize);
 	String contentType = getMimeType(uri);
 	if(uri.endsWith(".gz") && contentType != "application/x-gzip" && contentType != "application/octet-stream")
@@ -359,18 +376,24 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 	send("200 OK", contentType.c_str(), "");
 
 	if(isGet)	{
-		// disable Nagle if buffer size > TCP MTU of 1460
-		// client.setNoDelay(1);
-
-		// send the file
+		// Stream in bus-bounded chunks: hold the SPI bus only for each ms-long
+		// SD read, release it for the (slow) network write so the CPAP -- the
+		// other SPI master, polling ~every 10s -- always has the bus during
+		// transmission. Nothing in this path writes the card.
 		while(rFile.available())	{
-			// SD read speed ~ 17sec for 4.5MB file
-			int numRead = rFile.read(buf, sizeof(buf));
+			int numRead;
+			{
+				BusGuard _bg;
+				numRead = rFile.read(buf, sizeof(buf));
+			}
+			if(numRead <= 0)
+				break;
 			client.write(buf, numRead);
+			yield();
 		}
 	}
 
-	rFile.close();
+	{ BusGuard _bg; rFile.close(); }
 	DBG_PRINT("File "); DBG_PRINT(fileSize); DBG_PRINT(" bytes sent in: "); DBG_PRINT((millis() - tStart)/1000); DBG_PRINTLN(" sec");
 }
 
@@ -381,6 +404,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 void ESPWebDAV::handlePut(ResourceType resource)	{
 // ------------------------
 	DBG_PRINTLN("Processing Put");
+	BusGuard _bg;
 
 	// does URI refer to a directory
 	if(resource == RESOURCE_DIR)
@@ -485,6 +509,7 @@ void ESPWebDAV::handleWriteError(String message, FatFile *wFile)	{
 void ESPWebDAV::handleDirectoryCreate(ResourceType resource)	{
 // ------------------------
 	DBG_PRINTLN("Processing MKCOL");
+	BusGuard _bg;
 	
 	// does URI refer to anything
 	if(resource != RESOURCE_NONE)
@@ -509,6 +534,7 @@ void ESPWebDAV::handleDirectoryCreate(ResourceType resource)	{
 void ESPWebDAV::handleMove(ResourceType resource)	{
 // ------------------------
 	DBG_PRINTLN("Processing MOVE");
+	BusGuard _bg;
 	
 	// does URI refer to anything
 	if(resource == RESOURCE_NONE)
@@ -541,6 +567,7 @@ void ESPWebDAV::handleMove(ResourceType resource)	{
 void ESPWebDAV::handleDelete(ResourceType resource)	{
 // ------------------------
 	DBG_PRINTLN("Processing DELETE");
+	BusGuard _bg;
 	
 	// does URI refer to anything
 	if(resource == RESOURCE_NONE)

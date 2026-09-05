@@ -102,29 +102,30 @@ bool Network::ready() {
 	  dav.rejectClient("Failed to initialize SD Card");
 	  return false;
 	}
-	
-	// has other master been using the bus in last few seconds
-	if(!sdcontrol.canWeTakeBus()) {
-		dav.rejectClient("Marlin is reading from SD card");
-		return false;
-	}
+
+	// Bus arbitration is no longer decided here: a transient in-flight CPAP
+	// access would otherwise reject (and consume) the whole request. Each SD
+	// access below instead waits for a clear window via BusGuard, so we commit
+	// to serving a waiting client and block briefly per SD op.
 
 	return true;
 }
 
 void Network::handle() {
   if(network.ready()) {
-	  sdcontrol.takeBusControl();
-	  // Remount the FAT volume before serving. This bridge shares one SD
-	  // card with the CPAP (the other SPI master); the CPAP's writes
-	  // invalidate the volume state cached at boot, making subdirectory
-	  // open() fail as a spurious 404. Re-running sd.begin() with the bus
-	  // held gives the ESP a current view of the filesystem each request.
-	  if(dav.initSD(SD_CS, SPI_FULL_SPEED))
+	  // Remount the FAT volume before serving. This bridge shares one SD card
+	  // with the CPAP (the other SPI master); the CPAP's writes invalidate the
+	  // volume state cached at boot, making subdirectory open() fail as a
+	  // spurious 404. Re-running sd.begin() gives the ESP a current view each
+	  // request. The bus is held ONLY for the remount here; handleClient()
+	  // then runs bus-free and re-takes it (via BusGuard) around each single
+	  // SD access, so slow network I/O never holds the shared SPI bus.
+	  bool mounted;
+	  { BusGuard _bg; mounted = dav.initSD(SD_CS, SPI_FULL_SPEED); }
+	  if(mounted)
 	    dav.handleClient();
 	  else
 	    dav.rejectClient("Failed to initialize SD Card");
-	  sdcontrol.relinquishBusControl();
 	}
 }
 

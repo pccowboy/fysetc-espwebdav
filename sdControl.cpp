@@ -46,3 +46,17 @@ bool SDControl::canWeTakeBus() {
   }
   return true;
 }
+
+// Block until the bus has been quiet for SPI_BLOCKOUT_PERIOD (no CPAP access),
+// then take it. Bounded (~2s) so a busy in-session card cannot wedge the request
+// loop forever; out of session the ~10s poll gap clears the guard almost at once.
+void SDControl::waitAndTakeBus() {
+	unsigned long start = millis();
+	while(!canWeTakeBus()) {
+		yield();
+		delay(2);
+		if(millis() - start > 2000UL)
+			break;
+	}
+	takeBusControl();
+}
