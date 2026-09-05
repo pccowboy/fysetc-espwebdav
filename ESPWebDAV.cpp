@@ -382,26 +382,25 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 	send("200 OK", contentType.c_str(), "");
 
 	if(isGet) {
-		// Collision-detect-and-retry bus sharing (this module has no hardware mux:
-		// the ESP and the CPAP hang off the same SPI lines). Hold the bus for the
-		// whole transfer and let SdFat deselect the card (CS high) between reads; we
-		// never tristate while the CPAP is quiet, so the card stays in SPI mode and
-		// reacquire cannot corrupt it -- that was the v5 (tristate-every-chunk) fail.
-		// The CS_SENSE ISR latches otherMasterWants() the instant the CPAP asserts its
-		// own CS. On a latched collision (during a read, or during the slow WiFi write)
-		// we tristate to hand the CPAP the bus, wait for it to clear (SPI_BLOCKOUT),
-		// reopen+seek (volume already mounted per request), and RETRY the SAME offset. Idle
-		// stretches run bus-held and fly; a real poke costs one chunk retry, not the
-		// whole file -- that was the v3 (blind hold, no detect/recover) failure.
+		// Collision-detect-and-retry bus sharing (ESP8266 variant: no hardware mux,
+		// so ESP + host share the SPI lines). Hold the bus for the whole transfer and
+		// let SdFat deselect the card between reads; never tristate while quiet, so the
+		// card stays in SPI mode. The CS_SENSE ISR latches otherMasterWants() when the
+		// other master asserts CS mid-lease; on a latched collision we tristate, wait
+		// for the blockout to clear, drop the stale cached FAT/dir blocks (cacheClear),
+		// reopen+seek, and retry the same offset. DBG_ lines trace open/abort/done.
 		size_t pos = 0;
 		bool ioError = false;
 		int  retries = 0;
 		const int MAX_RETRIES = 20;
 		SdFile rFile;
 
-		// (re)take the bus, reopen+seek to pos on the existing mount, clear the latch.
+		// (re)take the bus, drop stale cached FAT/dir blocks (the shared card may have
+		// been mutated by the other master while the bus was released), then reopen+
+		// seek to pos on the existing mount and clear the collision latch.
 		auto reacquire = [&]() -> bool {
 			sdcontrol.waitAndTakeBus();
+			sd.vol()->cacheClear();
 			if(rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos)) {
 				sdcontrol.clearOtherMasterWants();
 				return true;
@@ -412,13 +411,15 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 		};
 
 		bool haveFile = reacquire();
+		DBG_PRINT("GET open="); DBG_PRINT(haveFile); DBG_PRINT(" size="); DBG_PRINTLN(fileSize);
 
 		while(haveFile && pos < fileSize) {
 			int numRead = rFile.read(buf, sizeof(buf));
 
-			// Bad read, or the CPAP asserted CS during it: discard this chunk, yield the
-			// bus, remount, and retry the same offset (do not advance pos).
+			// Bad read, or the other master asserted CS during it: discard, yield, drop
+			// the stale cache, reopen, and retry the same offset (do not advance pos).
 			if(numRead <= 0 || sdcontrol.otherMasterWants()) {
+				DBG_PRINT("  abort pos="); DBG_PRINT(pos); DBG_PRINT(" numRead="); DBG_PRINT(numRead); DBG_PRINT(" omw="); DBG_PRINT(sdcontrol.otherMasterWants()); DBG_PRINT(" retries="); DBG_PRINTLN(retries);
 				rFile.close();
 				sdcontrol.relinquishBusControl();
 				if(++retries > MAX_RETRIES) { ioError = true; break; }
@@ -431,7 +432,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 			pos += numRead;
 			yield();
 
-			// A poke during the slow WiFi write: yield + remount before the next read.
+			// A poke during the slow WiFi write: yield + refresh before the next read.
 			if(sdcontrol.otherMasterWants()) {
 				rFile.close();
 				sdcontrol.relinquishBusControl();
@@ -442,6 +443,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 
 		rFile.close();
 		sdcontrol.relinquishBusControl();
+		DBG_PRINT("GET done pos="); DBG_PRINT(pos); DBG_PRINT("/"); DBG_PRINT(fileSize); DBG_PRINT(" ioError="); DBG_PRINTLN(ioError);
 		if(!haveFile || ioError || pos < fileSize) {
 			client.flush();
 			client.stop();
