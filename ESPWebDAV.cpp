@@ -357,15 +357,16 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 	if(resource != RESOURCE_FILE)
 		return handleNotFound();
 
-	SdFile rFile;
 	long tStart = millis();
-	uint8_t buf[1460];
-	size_t fileSize;
+	static uint8_t buf[GET_CHUNK];
+	size_t fileSize = 0;
 	{
 		BusGuard _bg;
-		rFile.open(uri.c_str(), O_READ);
-		fileSize = rFile.fileSize();
-		rFile.close();
+		SdFile rFile;
+		if(rFile.open(uri.c_str(), O_READ))	{
+			fileSize = rFile.fileSize();
+			rFile.close();
+		}
 	}
 
 	sendHeader("Allow", "PROPFIND,OPTIONS,DELETE,COPY,MOVE,HEAD,POST,PUT,GET");
@@ -377,20 +378,40 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 	send("200 OK", contentType.c_str(), "");
 
 	if(isGet)	{
-		// Read the whole file inside ONE continuous bus lease. An open SdFile's
-		// SPI read state does not survive relinquishBusControl() (it tristates
-		// SCLK/MOSI/CS): releasing the bus between reads desyncs the card so the
-		// next read returns 0, truncating every GET to a single buffer. Out of
-		// session the CPAP only polls ~every 10s, so holding the bus for one
-		// file (well under the ~9s window) is safe and matches the access model.
-		BusGuard _bg;
-		if(rFile.open(uri.c_str(), O_READ))	{
-			int numRead;
-			while((numRead = rFile.read(buf, sizeof(buf))) > 0)	{
-				client.write(buf, numRead);
-				yield();
+		// Decouple SD reads from the slow WiFi writes: hold the shared SPI bus
+		// only for each brief chunk read, never during network I/O. An open
+		// SdFile is not carried across a bus release, so each chunk re-opens and
+		// seeks under its own short lease; the write then runs bus-free, letting
+		// the CPAP (the other master, polling ~every 10s) reclaim the bus between
+		// chunks instead of colliding mid-transfer.
+		size_t pos = 0;
+		bool ioError = false;
+		while(pos < fileSize)	{
+			int numRead = 0;
+			{
+				BusGuard _bg;
+				SdFile rFile;
+				if(rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos))
+					numRead = rFile.read(buf, sizeof(buf));
+				rFile.close();
 			}
-			rFile.close();
+			if(numRead <= 0)	{
+				ioError = true;
+				break;
+			}
+			if(client.write(buf, numRead) != (size_t)numRead)	{
+				ioError = true;
+				break;
+			}
+			pos += numRead;
+			yield();
+		}
+		// Wedge fix: a short/aborted read means we've sent fewer bytes than the
+		// promised Content-Length; tear the socket down now so the next request
+		// isn't left waiting on a half-open connection.
+		if(ioError)	{
+			client.flush();
+			client.stop();
 		}
 	}
 

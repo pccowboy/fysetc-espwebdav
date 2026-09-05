@@ -16,11 +16,16 @@
 #define CONTENT_LENGTH_NOT_SET ((size_t) -2)
 #define HTTP_MAX_POST_WAIT 		5000 
 
+// GET read-chunk size: SD is read one chunk at a time under a short bus
+// lease, then written to the client with the bus free. Static (BSS), not
+// on the ~4KB stack.
+#define GET_CHUNK                 8192
+
 // Build fingerprint -- printed on the serial boot banner (ESPWebDAV::init)
 // and emitted as an X-Firmware header on every response (_prepareHeader),
 // so the running binary is verifiable over HTTP with no serial or reflash:
 //   curl -sI -X OPTIONS http://<ip>/ | grep -i x-firmware
-#define FW_BUILD "fysetc-espwebdav fix v3 chunk+drain+remount+bootdelay+getlease 2026-09-04"
+#define FW_BUILD "fysetc-espwebdav fix v4 chunk+drain+remount+bootdelay+chunklease 2026-09-04"
 
 enum ResourceType { RESOURCE_NONE, RESOURCE_FILE, RESOURCE_DIR };
 enum DepthType { DEPTH_NONE, DEPTH_CHILD, DEPTH_ALL };
