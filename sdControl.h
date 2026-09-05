@@ -8,6 +8,13 @@
 // re-armed before it ever expired, so the ESP could never legally take the bus.
 #define SPI_BLOCKOUT_PERIOD	300UL
 
+// Startup settle: at power-on wait this long for the CPAP (the other SPI
+// master) to assert the bus and initialise the card FIRST, before the ESP
+// ever drives the shared pins. Must stay long -- a short value here makes the
+// CPAP's own power-on card init collide with the ESP and throw
+// "SD card error, remove your card". (Previously coupled to the blockout.)
+#define SPI_STARTUP_DELAY	20000UL
+
 class SDControl {
 public:
   SDControl() { }

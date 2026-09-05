@@ -15,7 +15,7 @@ void SDControl::setup() {
 	}, FALLING);
 
 	// wait for other master to assert SPI bus first
-	delay(SPI_BLOCKOUT_PERIOD);
+	delay(SPI_STARTUP_DELAY);
 }
 
 // ------------------------
