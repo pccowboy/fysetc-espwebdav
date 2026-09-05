@@ -390,7 +390,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 		// The CS_SENSE ISR latches otherMasterWants() the instant the CPAP asserts its
 		// own CS. On a latched collision (during a read, or during the slow WiFi write)
 		// we tristate to hand the CPAP the bus, wait for it to clear (SPI_BLOCKOUT),
-		// remount for a fresh FAT view, reopen+seek, and RETRY the SAME offset. Idle
+		// reopen+seek (volume already mounted per request), and RETRY the SAME offset. Idle
 		// stretches run bus-held and fly; a real poke costs one chunk retry, not the
 		// whole file -- that was the v3 (blind hold, no detect/recover) failure.
 		size_t pos = 0;
@@ -399,10 +399,10 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 		const int MAX_RETRIES = 20;
 		SdFile rFile;
 
-		// (re)take the bus, remount, reopen+seek to pos, clear the collision latch.
+		// (re)take the bus, reopen+seek to pos on the existing mount, clear the latch.
 		auto reacquire = [&]() -> bool {
 			sdcontrol.waitAndTakeBus();
-			if(sd.begin(_sdCsPin, _sdSpi) && rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos)) {
+			if(rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos)) {
 				sdcontrol.clearOtherMasterWants();
 				return true;
 			}
