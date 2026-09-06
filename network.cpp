@@ -98,10 +98,15 @@ bool Network::ready() {
   // do it only if there is a need to read FS
 	if(!dav.isClientWaiting())	return false;
 	
-	if(initFailed) {
-	  dav.rejectClient("Failed to initialize SD Card");
-	  return false;
-	}
+	// initFailed only reflects the ONE mount attempt at boot in
+	// startDAVServer(). It used to permanently gate every future request
+	// through rejectClient() -- so a single transient boot-time mount
+	// failure (bad SPI timing at power-on, card not yet settled) wedged
+	// the device into rejecting every request forever, even later once
+	// the card would mount fine. Network::handle() below already does a
+	// FRESH dav.initSD() remount attempt per request (added for the
+	// stale-FAT-view fix) and rejects on ITS OWN failure -- that is the
+	// live signal to trust, not this boot-time snapshot.
 
 	// Bus arbitration is no longer decided here: a transient in-flight CPAP
 	// access would otherwise reject (and consume) the whole request. Each SD
