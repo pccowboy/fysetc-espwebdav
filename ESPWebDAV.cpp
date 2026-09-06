@@ -67,6 +67,16 @@ void ESPWebDAV::handleReject(String rejectMessage)	{
 // ------------------------
 	DBG_PRINT("Rejecting request: "); DBG_PRINTLN(rejectMessage);
 
+	// Debug ring endpoints must work even when the SD mount FAILED --
+	// that is exactly the scenario (CPAP holding the bus) they exist to
+	// diagnose. They touch RAM only, never the SD card, so they are safe
+	// to serve here. Without this, Network::handle() routes every request
+	// through rejectClient()/handleReject() -- never handleRequest() --
+	// whenever dav.initSD() fails, so the /debuglog hook there is dead
+	// code on exactly the failure path it was built to observe.
+	if(method.equals("GET") && uri.equals("/debuglog"))   return handleDebugLog();
+	if(method.equals("GET") && uri.equals("/debugclear")) return handleDebugClear();
+
 	// handle options
 	if(method.equals("OPTIONS"))
 		return handleOptions(RESOURCE_NONE);
