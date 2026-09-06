@@ -455,6 +455,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 			int  numRead = -1;
 			bool opened = false, sought = false;
 			long waited, leaseMs;
+			uint8_t cardErr = 0, cardDat = 0;
 			{
 				long w0 = millis();
 				sdcontrol.waitAndTakeBus();
@@ -476,8 +477,8 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 				// open=0 means open() failed at the FatFile/directory layer with no
 				// card-level fault -- i.e. the on-disk directory data it read was
 				// syntactically valid but did not contain the file.
-				uint8_t cardErr = sd.card()->errorCode();
-				uint8_t cardDat = sd.card()->errorData();
+				cardErr = sd.card()->errorCode();
+				cardDat = sd.card()->errorData();
 				rFile.close();
 				leaseMs = millis() - l0;
 				sdcontrol.relinquishBusControl();
