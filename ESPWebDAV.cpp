@@ -449,7 +449,12 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 		int    chunk = 0;
 		bool   ioError = false;
 		int    retries = 0;
-		const int MAX_RETRIES = 200;
+		// [v20] MAX_RETRIES/backoff sized against the ~9s idle-poll runway measured
+		// by the SD activity monitor (research/count-sd-interrupts branch): 10 * 900ms
+		// leaves margin under that budget while still giving a real CPAP transaction
+		// room to finish. See the backoff rationale at the retry site below.
+		const int MAX_RETRIES = 10;
+		const long RETRY_BACKOFF_MS = 900;
 
 		while(pos < fileSize) {
 			int  numRead = -1;
@@ -495,20 +500,25 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 			// just as we took it): back off and retry the SAME offset on a fresh lease.
 			if(numRead <= 0) {
 				if(++retries > MAX_RETRIES) { DBG_PRINTLN("  GIVE UP: max retries"); ioError = true; break; }
-				yield();
-				// [v17] No backoff here previously -- 20 retries with only
-				// yield() between them spanned ~20-40ms of wall clock total
-				// (per-attempt lease was 0-4ms), which cannot possibly outlast
-				// a CPAP transaction lasting longer than that. wait=0ms on
-				// nearly every retry in the field log means canWeTakeBus()
-				// (including the v16 live-pin check) said clear every time,
-				// yet open()/read() still failed -- a collision inside our
-				// own lease, not a stale-timer miss. Widen the retry BUDGET
-				// to a real wall-clock window (200 * ~25ms ~= 5s) so a longer
-				// CPAP operation (e.g. post-insertion housekeeping) actually
-				// has a chance to finish inside it. Still bounded, and small
-				// next to the ~9s idle-poll runway.
-				delay(25);
+				// [v20] v17's 25ms/200-retry loop hammered the bus every 25ms for a
+				// full 5s and failed 200/200 times in the ResMed with wait=0ms on
+				// every single attempt -- canWeTakeBus() (timer + v16 live CS_SENSE
+				// read) reported clear every time, yet the card returned a genuine
+				// SPI-level protocol error (cardErr=0x30 CMD17, cardData R1_ILLEGAL_
+				// COMMAND/R1_COM_CRC_ERROR) on every attempt. Two bench runs (v15,
+				// v19: 15/15 FULL, 70+ chunk cycles, zero errors) with the IDENTICAL
+				// open/seek/read code prove that loop is not the bug -- the CPAP is
+				// really on the bus for the whole window, and CS_SENSE's live read
+				// is not tracking that: it may be edge/pulse-only rather than
+				// level-following, in which case it can never report "still busy"
+				// for a multi-hundred-ms transaction, only "an edge happened
+				// recently". Stop trusting it as a busy signal on failure and
+				// instead treat the READ FAILURE ITSELF as the busy signal: back
+				// off a real fraction of a second (long enough to clear a CPAP
+				// transaction) before the next attempt, rather than retrying
+				// immediately into the same collision. 10 retries * 900ms ~= 9s
+				// matches the idle-poll runway instead of hammering inside it.
+				delay(RETRY_BACKOFF_MS);
 				continue;
 			}
 			retries = 0;
