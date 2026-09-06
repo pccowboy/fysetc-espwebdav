@@ -47,6 +47,17 @@ bool SDControl::canWeTakeBus() {
 	if(millis() < _spiBlockoutTime) {
     return false;
   }
+  // Time-based debounce alone is not enough: it only re-arms on a
+  // CS_SENSE FALLING edge, so a single CPAP transaction whose CS-low
+  // period runs LONGER than SPI_BLOCKOUT_PERIOD looks "clear" while
+  // the CPAP is still mid-transaction -- there is no further edge left
+  // to re-arm on. Read the live pin as ground truth the timer cannot
+  // provide: if the other master is STILL holding CS low right now,
+  // at the exact instant we decide, say so and re-arm from here.
+  if(digitalRead(CS_SENSE) == LOW) {
+    _spiBlockoutTime = millis() + SPI_BLOCKOUT_PERIOD;
+    return false;
+  }
   return true;
 }
 
