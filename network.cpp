@@ -99,38 +99,34 @@ bool Network::ready() {
 	if(!dav.isClientWaiting())	return false;
 	
 	// initFailed only reflects the ONE mount attempt at boot in
-	// startDAVServer(). It used to permanently gate every future request
-	// through rejectClient() -- so a single transient boot-time mount
-	// failure (bad SPI timing at power-on, card not yet settled) wedged
-	// the device into rejecting every request forever, even later once
-	// the card would mount fine. Network::handle() below already does a
-	// FRESH dav.initSD() remount attempt per request (added for the
-	// stale-FAT-view fix) and rejects on ITS OWN failure -- that is the
-	// live signal to trust, not this boot-time snapshot.
-
-	// Bus arbitration is no longer decided here: a transient in-flight CPAP
-	// access would otherwise reject (and consume) the whole request. Each SD
-	// access below instead waits for a clear window via BusGuard, so we commit
-	// to serving a waiting client and block briefly per SD op.
+	// startDAVServer(). [v12, kept over the revert below] Not treated
+	// as a permanent gate: a single transient boot-time mount failure
+	// must not wedge every future request forever. main only mounts
+	// once at boot and never again, so upstream never needed a retry
+	// path here; canWeTakeBus() below is the live per-request signal.
+	
+	// [v13: restored from main] has other master been using the bus
+	// in last few seconds. Re-adding the ORIGINAL blockout gate that
+	// v1 removed -- the per-request dav.initSD() remount v1 added in
+	// handle() (below) is suspected of being what makes the card
+	// drop off the host bus as soon as WiFi activity starts.
+	if(!sdcontrol.canWeTakeBus()) {
+		dav.rejectClient("Marlin is reading from SD card");
+		return false;
+	}
 
 	return true;
 }
 
 void Network::handle() {
   if(network.ready()) {
-	  // Remount the FAT volume before serving. This bridge shares one SD card
-	  // with the CPAP (the other SPI master); the CPAP's writes invalidate the
-	  // volume state cached at boot, making subdirectory open() fail as a
-	  // spurious 404. Re-running sd.begin() gives the ESP a current view each
-	  // request. The bus is held ONLY for the remount here; handleClient()
-	  // then runs bus-free and re-takes it (via BusGuard) around each single
-	  // SD access, so slow network I/O never holds the shared SPI bus.
-	  bool mounted;
-	  { BusGuard _bg; mounted = dav.initSD(SD_CS, SPI_FULL_SPEED); }
-	  if(mounted)
-	    dav.handleClient();
-	  else
-	    dav.rejectClient("Failed to initialize SD Card");
+	  // [v13: restored from main] mount ONCE at boot (startDAVServer);
+	  // no per-request remount. v1 added dav.initSD() here to fix a
+	  // stale-FAT-view 404 after CPAP writes -- if that turns out to
+	  // still be needed, it comes back deliberately, not as a default.
+	  sdcontrol.takeBusControl();
+	  dav.handleClient();
+	  sdcontrol.relinquishBusControl();
 	}
 }
 
