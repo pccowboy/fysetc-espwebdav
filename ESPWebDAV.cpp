@@ -382,69 +382,69 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 	send("200 OK", contentType.c_str(), "");
 
 	if(isGet) {
-		// Collision-detect-and-retry bus sharing (ESP8266 variant: no hardware mux,
-		// so ESP + host share the SPI lines). Hold the bus for the whole transfer and
-		// let SdFat deselect the card between reads; never tristate while quiet, so the
-		// card stays in SPI mode. The CS_SENSE ISR latches otherMasterWants() when the
-		// other master asserts CS mid-lease; on a latched collision we tristate, wait
-		// for the blockout to clear, drop the stale cached FAT/dir blocks (cacheClear),
-		// reopen+seek, and retry the same offset. DBG_ lines trace open/abort/done.
+		// Decoupled chunked GET for the shared-bus ESP8266 module (no hardware mux, and
+		// CS_SENSE cannot tell our own CS from a foreign master's while we hold the bus,
+		// so mid-transfer collision detection is impossible here -- that was the v6..v8
+		// otherMasterWants false-positive that discarded every good chunk). Instead:
+		// read ONE chunk under a short bus lease, RELEASE the bus, then write it to the
+		// client bus-free -- the slow WiFi write can never collide with the CPAP.
+		// waitAndTakeBus() blocks until the CPAP has been quiet for SPI_BLOCKOUT_PERIOD
+		// (armed by the CS_SENSE ISR only while we do NOT hold the bus -- the one signal
+		// that is trustworthy on this hardware). cacheClear() drops stale cached FAT/dir
+		// blocks on every re-take so a reopen after the CPAP mutated the card reads
+		// fresh metadata (stale view == the v4 truncate-at-8192 failure).
 		size_t pos = 0;
-		bool ioError = false;
-		int  retries = 0;
+		int    chunk = 0;
+		bool   ioError = false;
+		int    retries = 0;
 		const int MAX_RETRIES = 20;
-		SdFile rFile;
 
-		// (re)take the bus, drop stale cached FAT/dir blocks (the shared card may have
-		// been mutated by the other master while the bus was released), then reopen+
-		// seek to pos on the existing mount and clear the collision latch.
-		auto reacquire = [&]() -> bool {
-			sdcontrol.waitAndTakeBus();
-			sd.vol()->cacheClear();
-			if(rFile.open(uri.c_str(), O_READ) && rFile.seekSet(pos)) {
-				sdcontrol.clearOtherMasterWants();
-				return true;
-			}
-			rFile.close();
-			sdcontrol.relinquishBusControl();
-			return false;
-		};
-
-		bool haveFile = reacquire();
-		DBG_PRINT("GET open="); DBG_PRINT(haveFile); DBG_PRINT(" size="); DBG_PRINTLN(fileSize);
-
-		while(haveFile && pos < fileSize) {
-			int numRead = rFile.read(buf, sizeof(buf));
-
-			// Bad read, or the other master asserted CS during it: discard, yield, drop
-			// the stale cache, reopen, and retry the same offset (do not advance pos).
-			if(numRead <= 0 || sdcontrol.otherMasterWants()) {
-				DBG_PRINT("  abort pos="); DBG_PRINT(pos); DBG_PRINT(" numRead="); DBG_PRINT(numRead); DBG_PRINT(" omw="); DBG_PRINT(sdcontrol.otherMasterWants()); DBG_PRINT(" retries="); DBG_PRINTLN(retries);
+		while(pos < fileSize) {
+			int  numRead = -1;
+			bool opened = false, sought = false;
+			long waited, leaseMs;
+			{
+				long w0 = millis();
+				sdcontrol.waitAndTakeBus();
+				waited = millis() - w0;
+				long l0 = millis();
+				sd.vol()->cacheClear();
+				SdFile rFile;
+				opened = rFile.open(uri.c_str(), O_READ);
+				if(opened) sought = rFile.seekSet(pos);
+				if(sought) numRead = rFile.read(buf, sizeof(buf));
 				rFile.close();
+				leaseMs = millis() - l0;
 				sdcontrol.relinquishBusControl();
-				if(++retries > MAX_RETRIES) { ioError = true; break; }
-				reacquire();
+			}
+
+			DBG_PRINT("  chunk "); DBG_PRINT(chunk); DBG_PRINT(" pos="); DBG_PRINT(pos);
+			DBG_PRINT(" wait="); DBG_PRINT(waited); DBG_PRINT("ms lease="); DBG_PRINT(leaseMs);
+			DBG_PRINT("ms open="); DBG_PRINT(opened); DBG_PRINT(" seek="); DBG_PRINT(sought);
+			DBG_PRINT(" read="); DBG_PRINT(numRead); DBG_PRINT(" retries="); DBG_PRINTLN(retries);
+
+			// Bad/short read (open, seek, or read failed -- e.g. the CPAP grabbed the card
+			// just as we took it): back off and retry the SAME offset on a fresh lease.
+			if(numRead <= 0) {
+				if(++retries > MAX_RETRIES) { DBG_PRINTLN("  GIVE UP: max retries"); ioError = true; break; }
+				yield();
 				continue;
 			}
-
 			retries = 0;
-			if(client.write(buf, numRead) != (size_t)numRead) { ioError = true; break; }
-			pos += numRead;
-			yield();
 
-			// A poke during the slow WiFi write: yield + refresh before the next read.
-			if(sdcontrol.otherMasterWants()) {
-				rFile.close();
-				sdcontrol.relinquishBusControl();
-				if(++retries > MAX_RETRIES) { ioError = true; break; }
-				reacquire();
+			// Bus is released here; the client write is the slow part and runs bus-free.
+			size_t wrote = client.write(buf, numRead);
+			if(wrote != (size_t)numRead) {
+				DBG_PRINT("  WRITE SHORT wrote="); DBG_PRINT(wrote); DBG_PRINT("/"); DBG_PRINTLN(numRead);
+				ioError = true; break;
 			}
+			pos += numRead;
+			chunk++;
+			yield();
 		}
 
-		rFile.close();
-		sdcontrol.relinquishBusControl();
-		DBG_PRINT("GET done pos="); DBG_PRINT(pos); DBG_PRINT("/"); DBG_PRINT(fileSize); DBG_PRINT(" ioError="); DBG_PRINTLN(ioError);
-		if(!haveFile || ioError || pos < fileSize) {
+		DBG_PRINT("GET done pos="); DBG_PRINT(pos); DBG_PRINT("/"); DBG_PRINT(fileSize); DBG_PRINT(" chunks="); DBG_PRINT(chunk); DBG_PRINT(" ioError="); DBG_PRINTLN(ioError);
+		if(ioError || pos < fileSize) {
 			client.flush();
 			client.stop();
 		}

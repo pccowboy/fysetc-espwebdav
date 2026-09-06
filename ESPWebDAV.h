@@ -25,7 +25,7 @@
 // and emitted as an X-Firmware header on every response (_prepareHeader),
 // so the running binary is verifiable over HTTP with no serial or reflash:
 //   curl -sI -X OPTIONS http://<ip>/ | grep -i x-firmware
-#define FW_BUILD "fysetc-espwebdav fix v8 detect+retry+cacheclear+dbg 2026-09-05"
+#define FW_BUILD "fysetc-espwebdav fix v9 decouple+cacheclear+dbg 2026-09-05"
 
 enum ResourceType { RESOURCE_NONE, RESOURCE_FILE, RESOURCE_DIR };
 enum DepthType { DEPTH_NONE, DEPTH_CHILD, DEPTH_ALL };
