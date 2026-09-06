@@ -465,6 +465,19 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 				opened = rFile.open(uri.c_str(), O_READ);
 				if(opened) sought = rFile.seekSet(pos);
 				if(sought) numRead = rFile.read(buf, sizeof(buf));
+				// [v19] Grab the raw SdSpiCard error BEFORE close(): close()->sync() on
+				// an O_READ file never writes (no F_FILE_DIR_DIRTY), so it can't clobber
+				// this, but capturing pre-close keeps the value tied unambiguously to
+				// whichever of open/seek/read just failed. Per SdCard/SdInfo.h (SdFat
+				// 1.1.4): 0x00=NONE, 0x30=CMD17(readBlock) / 0x31=CMD18(readStart),
+				// 0x50=READ(bad start token) / 0x51=READ_CRC / 0x55=READ_TIMEOUT,
+				// 0x20=CMD0(reset, boot-only). A nonzero code here means the SPI
+				// transaction itself failed against the card; a code of 0 with
+				// open=0 means open() failed at the FatFile/directory layer with no
+				// card-level fault -- i.e. the on-disk directory data it read was
+				// syntactically valid but did not contain the file.
+				uint8_t cardErr = sd.card()->errorCode();
+				uint8_t cardDat = sd.card()->errorData();
 				rFile.close();
 				leaseMs = millis() - l0;
 				sdcontrol.relinquishBusControl();
@@ -473,7 +486,9 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 			DBG_PRINT("  chunk "); DBG_PRINT(chunk); DBG_PRINT(" pos="); DBG_PRINT(pos);
 			DBG_PRINT(" wait="); DBG_PRINT(waited); DBG_PRINT("ms lease="); DBG_PRINT(leaseMs);
 			DBG_PRINT("ms open="); DBG_PRINT(opened); DBG_PRINT(" seek="); DBG_PRINT(sought);
-			DBG_PRINT(" read="); DBG_PRINT(numRead); DBG_PRINT(" retries="); DBG_PRINTLN(retries);
+			DBG_PRINT(" read="); DBG_PRINT(numRead); DBG_PRINT(" retries="); DBG_PRINT(retries);
+			DBG_PRINT(" cardErr=0x"); DBG_PRINT(String(cardErr, HEX));
+			DBG_PRINT(" cardData=0x"); DBG_PRINTLN(String(cardDat, HEX));
 
 			// Bad/short read (open, seek, or read failed -- e.g. the CPAP grabbed the card
 			// just as we took it): back off and retry the SAME offset on a fresh lease.
