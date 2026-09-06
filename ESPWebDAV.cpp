@@ -485,9 +485,24 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 			retries = 0;
 
 			// Bus is released here; the client write is the slow part and runs bus-free.
-			size_t wrote = client.write(buf, numRead);
-			if(wrote != (size_t)numRead) {
-				DBG_PRINT("  WRITE SHORT wrote="); DBG_PRINT(wrote); DBG_PRINT("/"); DBG_PRINTLN(numRead);
+			// WiFiClient::write() legitimately returns less than requested when the TCP
+			// send buffer is momentarily full -- normal backpressure, not a socket
+			// failure. Retry the remainder instead of aborting the whole transfer.
+			size_t written = 0;
+			int writeRetries = 0;
+			const int MAX_WRITE_RETRIES = 50;
+			while(written < (size_t)numRead) {
+				size_t wrote = client.write(buf + written, numRead - written);
+				if(wrote == 0) {
+					if(!client.connected() || ++writeRetries > MAX_WRITE_RETRIES) break;
+					yield();
+					continue;
+				}
+				written += wrote;
+				writeRetries = 0;
+			}
+			if(written != (size_t)numRead) {
+				DBG_PRINT("  WRITE FAILED written="); DBG_PRINT(written); DBG_PRINT("/"); DBG_PRINTLN(numRead);
 				ioError = true; break;
 			}
 			pos += numRead;
