@@ -39,6 +39,19 @@ bool ESPWebDAV::initSD(int chipSelectPin, SPISettings spiSettings) {
 }
 
 // ------------------------
+// SdFat begin() gives no reason for a false return on its own -- the
+// low-level SD_CARD_ERROR_* code/data pair (see SdFat SdInfo.h) is on
+// the underlying SdSpiCard. CMD0 (0x20) specifically means the card
+// never answered the software-reset command in SD_INIT_TIMEOUT (2s) --
+// per SdFat upstream, that is consistent with another SPI device
+// already selected and holding the bus. Logged via DBG_* so it lands
+// in both Serial and /debuglog.
+void ESPWebDAV::printSdInitError() {
+	DBG_PRINT("SD init errorCode=0x"); DBG_PRINT(String(sd.card()->errorCode(), HEX));
+	DBG_PRINT(" errorData=0x"); DBG_PRINTLN(String(sd.card()->errorData(), HEX));
+}
+
+// ------------------------
 bool ESPWebDAV::startServer() {
 // ------------------------
 	// start the wifi server

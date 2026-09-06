@@ -52,7 +52,7 @@ extern DebugRing dbg;
 // and emitted as an X-Firmware header on every response (_prepareHeader),
 // so the running binary is verifiable over HTTP with no serial or reflash:
 //   curl -sI -X OPTIONS http://<ip>/ | grep -i x-firmware
-#define FW_BUILD "fysetc-espwebdav fix v13 restore-main-mount-model 2026-09-06"
+#define FW_BUILD "fysetc-espwebdav fix v14 sd-init-errorcode-dbg 2026-09-06"
 
 enum ResourceType { RESOURCE_NONE, RESOURCE_FILE, RESOURCE_DIR };
 enum DepthType { DEPTH_NONE, DEPTH_CHILD, DEPTH_ALL };
@@ -62,6 +62,7 @@ class ESPWebDAV	{
 public:
 	bool init(int chipSelectPin, SPISettings spiSettings, int serverPort);
   bool initSD(int chipSelectPin, SPISettings spiSettings);
+	void printSdInitError();
   bool startServer();
 	bool isClientWaiting();
 	void handleClient(String blank = "");
