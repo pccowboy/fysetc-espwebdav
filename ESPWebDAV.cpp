@@ -449,7 +449,7 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 		int    chunk = 0;
 		bool   ioError = false;
 		int    retries = 0;
-		const int MAX_RETRIES = 20;
+		const int MAX_RETRIES = 200;
 
 		while(pos < fileSize) {
 			int  numRead = -1;
@@ -480,6 +480,19 @@ void ESPWebDAV::handleGet(ResourceType resource, bool isGet)	{
 			if(numRead <= 0) {
 				if(++retries > MAX_RETRIES) { DBG_PRINTLN("  GIVE UP: max retries"); ioError = true; break; }
 				yield();
+				// [v17] No backoff here previously -- 20 retries with only
+				// yield() between them spanned ~20-40ms of wall clock total
+				// (per-attempt lease was 0-4ms), which cannot possibly outlast
+				// a CPAP transaction lasting longer than that. wait=0ms on
+				// nearly every retry in the field log means canWeTakeBus()
+				// (including the v16 live-pin check) said clear every time,
+				// yet open()/read() still failed -- a collision inside our
+				// own lease, not a stale-timer miss. Widen the retry BUDGET
+				// to a real wall-clock window (200 * ~25ms ~= 5s) so a longer
+				// CPAP operation (e.g. post-insertion housekeeping) actually
+				// has a chance to finish inside it. Still bounded, and small
+				// next to the ~9s idle-poll runway.
+				delay(25);
 				continue;
 			}
 			retries = 0;
