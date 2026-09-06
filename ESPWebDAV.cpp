@@ -9,6 +9,8 @@
 #include "ESPWebDAV.h"
 #include "sdControl.h"
 
+DebugRing dbg;
+
 // define cal constants
 const char *months[]  = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 const char *wdays[]  = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
@@ -98,8 +100,35 @@ void ESPWebDAV::handleReject(String rejectMessage)	{
 // Test PUT a file: curl -v -T c.txt -H "Expect:" http://Rigidbot/c.txt
 // C:\Users\gsbal>curl -v -X LOCK http://Rigidbot/EMA_CPP_TRCC_Tutorial/Consumer.cpp -d "<?xml version=\"1.0\" encoding=\"utf-8\" ?><D:lockinfo xmlns:D=\"DAV:\"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype><D:owner><D:href>CARBON2\gsbal</D:href></D:owner></D:lockinfo>"
 // ------------------------
+void ESPWebDAV::handleDebugLog() {
+// ------------------------
+	sendHeader("Allow", "GET");
+	setContentLength(dbg.length());
+	send("200 OK", "text/plain", "");
+	// stream the ring oldest -> newest (pure RAM, bus-free)
+	if(dbg.wrapped()) {
+		client.write((const uint8_t*)dbg.buf() + dbg.head(), DBG_RING_SIZE - dbg.head());
+		client.write((const uint8_t*)dbg.buf(), dbg.head());
+	}
+	else
+		client.write((const uint8_t*)dbg.buf(), dbg.head());
+}
+
+// ------------------------
+void ESPWebDAV::handleDebugClear() {
+// ------------------------
+	dbg.reset();
+	send("200 OK", "text/plain", "debug ring cleared\r\n");
+}
+
+// ------------------------
 void ESPWebDAV::handleRequest(String blank)	{
 // ------------------------
+	// Debug ring endpoints -- readable over WiFi when USB serial is unavailable
+	// (card in the ResMed). Intercept before file resolution / bus lease.
+	if(method.equals("GET") && uri.equals("/debuglog"))   return handleDebugLog();
+	if(method.equals("GET") && uri.equals("/debugclear")) return handleDebugClear();
+
 	ResourceType resource = RESOURCE_NONE;
 
 	// does uri refer to a file or directory or a null?
